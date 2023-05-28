@@ -1,0 +1,268 @@
+module MQTT;
+
+import spicy;
+
+#  MQTT Packet Format
+#  --------------------------------------------
+#  | Fixed Header | Variable Header | Payload |
+#  --------------------------------------------
+
+public type Message = unit {
+
+    fixed_header: FixedHeader;
+    
+    switch ( self.fixed_header.packet_type ) {
+        ControlField::CONNECT     -> connect:     Connect;
+        ControlField::CONNACK     -> connack:     Connack;
+        ControlField::PUBLISH     -> publish:     Publish(self.fixed_header.dup, self.fixed_header.qos, self.fixed_header.retain, self.fixed_header.remaining_length);
+        ControlField::PUBACK      -> puback:      Puback;
+        ControlField::PUBREC      -> pubrec:      Pubrec;
+        ControlField::PUBREL      -> pubrel:      Pubrel;
+        ControlField::PUBCOMP     -> pubcomp:     Pubcomp;
+        ControlField::SUBSCRIBE   -> subscribe:   Subscribe;
+        ControlField::SUBACK      -> suback:      Suback;
+        ControlField::UNSUBSCRIBE -> unsubscribe: Unsubscribe;
+        ControlField::UNSUBACK    -> unsuback:    Unsuback;
+	    ControlField::PINGREQ     -> : void;
+        ControlField::PINGRESP    -> : void;
+        ControlField::DISCONNECT  -> : void;
+        ControlField::AUTH        -> : void;
+    };
+
+    on %done {
+        print self;
+    }
+};
+
+#  Fixed Header
+#  ------------------------------------------------------------
+#  |   Bit    |  7  |  6  |  5  |  4  |  3  |  2  |  1  |  0  |
+#  ------------------------------------------------------------
+#  | byte 1   |  Control Packet type  |         Flags         |
+#  ------------------------------------------------------------
+#  | byte 2.. |                 Remaining Length              |
+#  ------------------------------------------------------------
+
+type FixedHeader = unit {
+
+    fixed_header_byte1: bitfield(8) {
+        control_packet_type: 4..7 &convert=ControlField($$);
+        flag: 0..3;
+    };
+    
+    # Fixed header flag is only used in PUBLISH
+    #  ----------------------------
+    #  |  3  |  2  |  1  |   0    |
+    #  ----------------------------
+    #  | DUP | QoS level | RETAIN |
+    #  ----------------------------
+    
+    on fixed_header_byte1 {
+    
+        self.packet_type = $$.control_packet_type;
+	
+        if ( $$.flag % 2 == 1 )
+            self.retain = True;
+        if ( $$.flag > 7 )
+            self.dup = True;
+            switch ( $$.flag / 2 % 4 ) {
+                case 0:
+                    self.qos = 0;
+                case 1:
+                    self.qos = 1;
+                case 2:
+                    self.qos = 2;
+                case 3:
+                    self.qos = 3;
+            }    
+    }
+    
+    length: VariableByteInteger;
+
+    var packet_type: ControlField;
+    var dup: bool = False;
+    var qos: uint8 = 0;
+    var retain: bool = False;
+    var remaining_length: uint32;
+    
+    on %done {
+        self.remaining_length = self.length.value;
+    }
+};
+
+type Connect = unit {
+    protocol_name: UTF8EncodedString &convert=$$.data.decode();
+    version: uint8;
+    flags: bitfield(8) {
+        reserved: 0;
+        clean_session: 1;
+        will_flag: 2;
+        will_qos: 3..4;
+        will_retain: 5;
+        password_flag: 6;
+        username_flag: 7;
+    };
+    keep_alive: uint16 &convert=cast<interval>($$);
+    client_id: UTF8EncodedString &convert=$$.data.decode();
+    will_topic_string: UTF8EncodedString if ( self.flags.will_flag == 1 ) {
+        self.will_topic = $$.data.decode();
+    }
+    will_msg_string: UTF8EncodedString if ( self.flags.will_flag == 1 ) {
+        self.will_msg = $$.data.decode();
+    }
+    username_string: UTF8EncodedString &convert=$$.data.decode() if ( self.flags.username_flag == 1 );
+    password_string: UTF8EncodedString &convert=$$.data.decode() if ( self.flags.password_flag == 1 );
+   
+    var clean_session: bool = False;
+    var will_retain: bool = False;
+    var will_qos: uint8 = 0;
+    var will_topic: string = "";
+    var will_msg: string = "";
+    var username: string = "";
+    var password: string = "";
+    on %done {
+        if ( self.flags.clean_session == 1 )
+            self.clean_session = True;
+        if ( self.flags.will_retain == 1 )
+            self.will_retain = True;
+        self.will_qos = self.flags.will_qos;
+    }
+};
+
+type Connack = unit {
+    acknowledge_flags: bitfield(8) {
+        session_present_flag: 0;
+	    reserved: 1..7;
+    };
+    return_code: uint8;
+    
+    var session_present: bool = False;
+    on %done {
+        if ( self.acknowledge_flags.session_present_flag == 1 )
+            self.session_present = True;
+    }
+};
+
+type Publish = unit(d: bool, q: uint8, r: bool, remaining_length: uint32) {
+    topic_string: UTF8EncodedString {
+        self.payload_len = remaining_length - 2 - $$.length;
+    }
+    id: uint16 if ( q == 1 || q == 2 ) { # packet identifier
+        self.payload_len -= 2;
+        self.msg_id = $$;
+    }
+    
+    payload: bytes &size=self.payload_len &convert=$$.decode();
+
+    var topic: string;
+    var msg_id: uint16 = 0;
+    var dup: bool = d;
+    var qos: uint8 = q;
+    var retain: bool = r;
+    var payload_len: uint32;
+    on %done {
+        self.topic = self.topic_string.data.decode();
+    }
+};
+
+type Puback = unit {
+    msg_id: uint16; # packet identifier
+};
+
+type Pubrec = unit {
+    msg_id: uint16; # packet identifier
+};
+
+type Pubrel = unit {
+    msg_id: uint16; # packet identifier
+};
+
+type Pubcomp = unit {
+    msg_id: uint16; # packet identifier
+};
+
+type Subscribe = unit {
+    msg_id: uint16; # packet identifier
+    topic_qos: TopicQoSPair[] &eod;
+    on topic_qos foreach {
+        self.topics.push_back($$.topic);
+        self.requested_qos.push_back($$.requested_qos);
+    }
+
+    var topics: vector<string> = vector<string>();
+    var requested_qos: vector<uint8> = vector<uint8>();
+};
+
+# TODO: granted_qos should be a vector
+
+type Suback = unit {
+    msg_id: uint16; # packet identifier
+    reason_code: SubackReasonCode(self.msg_id)[] &eod;
+};
+
+type SubackReasonCode = unit(id: uint16) {
+    granted_qos: uint8;
+    var msg_id: uint16 = id;
+};
+
+type Unsubscribe = unit {
+    msg_id: uint16; # packet identifier
+    topics_string: UTF8EncodedString[] &eod;
+    on topics_string foreach {
+        self.topics.push_back($$.data.decode());
+    }
+
+    var topics: vector<string> = vector<string>();
+};
+
+type Unsuback = unit {
+    msg_id: uint16; # packet identifier
+};
+
+type TopicQoSPair = unit {
+    topic: UTF8EncodedString &convert=$$.data.decode();
+    qos: bitfield(8) {
+        requested_qos: 0..1;
+        reserved: 2..7;
+    };
+    var requested_qos: uint8 = 0;
+    on %done {
+        self.requested_qos = self.qos.requested_qos;
+    }
+};
+
+type UTF8EncodedString = unit {
+    length: uint16;
+    data: bytes &size=self.length;
+};
+
+type VariableByteInteger = unit {
+    integer_array: uint8[] &until-including=($$<128);
+    var value: uint32 = 0;
+    on %done {
+        for ( i in self.integer_array )
+            if ( i > 128 )
+                self.value = self.value * 128 + ( i - 128 );
+            else
+                self.value = self.value * 128 + i;
+    }
+};
+
+type ControlField = enum {
+    RESERVED    = 0x00,
+    CONNECT     = 0x01,
+    CONNACK     = 0x02,
+    PUBLISH     = 0x03,
+    PUBACK      = 0x04,
+    PUBREC      = 0x05,
+    PUBREL      = 0x06,
+    PUBCOMP     = 0x07,
+    SUBSCRIBE   = 0x08,
+    SUBACK      = 0x09,
+    UNSUBSCRIBE = 0x0a,
+    UNSUBACK    = 0x0b,
+    PINGREQ     = 0x0c,
+    PINGRESP    = 0x0d,
+    DISCONNECT  = 0x0e,
+    AUTH        = 0x0f,
+};

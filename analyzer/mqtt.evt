@@ -1,0 +1,29 @@
+import MQTT;
+import Zeek_MQTT;
+
+protocol analyzer spicy::MQTT over TCP:
+    parse with MQTT::Message,
+    port 1883/tcp,
+    replaces MQTT;
+
+on MQTT::Connect::%done -> event MQTT::mqtt_connect($conn, self.protocol_name, self.version, self.client_id, self.will_topic, self.will_msg);
+
+on MQTT::Connack::%done -> event MQTT::mqtt_connack($conn, self.return_code);
+
+on MQTT::Publish::%done -> event MQTT::mqtt_publish($conn, $is_orig, self.msg_id, self.retain, self.qos, self.topic, self.payload, self.payload_len);
+
+on MQTT::Puback::%done -> event MQTT::mqtt_puback($conn, $is_orig, self.msg_id);
+
+on MQTT::Pubrec::%done -> event MQTT::mqtt_pubrec($conn, $is_orig, self.msg_id);
+
+on MQTT::Pubrel::%done -> event MQTT::mqtt_pubrel($conn, $is_orig, self.msg_id);
+
+on MQTT::Pubcomp::%done -> event MQTT::mqtt_pubcomp($conn, $is_orig, self.msg_id);
+
+on MQTT::Subscribe::%done -> event MQTT::mqtt_subscribe($conn, $is_orig, self.msg_id, self.topics, self.requested_qos);
+
+on MQTT::SubackReasonCode::%done -> event MQTT::mqtt_suback($conn, self.msg_id, self.granted_qos);
+
+on MQTT::Unsubscribe::%done -> event MQTT::mqtt_unsubscribe($conn, $is_orig, self.msg_id, self.topics);
+
+on MQTT::Unsuback::%done -> event MQTT::mqtt_unsuback($conn, $is_orig, self.msg_id);

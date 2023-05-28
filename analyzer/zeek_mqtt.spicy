@@ -1,0 +1,12 @@
+module Zeek_MQTT;
+
+import MQTT;
+import zeek;
+
+on MQTT::Message::%done {
+  zeek::confirm_protocol();
+}
+
+on MQTT::Message::%error {
+  zeek::reject_protocol("error while parsing MQTT message");
+}
